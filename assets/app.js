@@ -25,8 +25,8 @@
     searchView: false,   // 是否处于“全局搜索结果”视图
     lbIndex: -1,         // 灯箱当前照片在 state.files 中的下标
     countCache: new WeakMap(),
-    prefix: [],          // 顶层只有 JPG 时，把它当作根目录（URL 中仍保留 JPG 段）
-    root: null,          // 实际用于浏览的根节点
+    prefix: [],          // 清单根上若还套着一层目录（如旧清单的 JPG），用于拼图片地址
+    root: null,          // 根节点：图库直接从城市目录这一层开始
   };
 
   /* ------------------------------ 工具 ------------------------------ */
@@ -64,14 +64,20 @@
 
   const encodePath = (segs) => segs.map(encodeURIComponent).join('/');
   const imageUrl = (segs) => state.manifest.base + encodePath([...state.prefix, ...segs]);
-  const fullPath = (segs) => [...state.prefix, ...segs];   // 含顶层 JPG 的完整路径
+
+  // 路径是否能解析到某个文件夹（末段允许是文件名）
+  const pathResolves = (s) =>
+    !s.length || !!nodeAt(s) || (s.length > 1 && !!nodeAt(s.slice(0, -1)));
 
   function parseHash() {
     const raw = location.hash.replace(/^#\/?/, '');
     let segs = raw ? raw.split('/').filter(Boolean).map(decodeURIComponent) : [];
-    const p = state.prefix;                                 // 兼容带 JPG 前缀的旧链接
-    if (p.length && segs.length >= p.length && p.every((s, i) => segs[i] === s)) {
-      segs = segs.slice(p.length);
+    const p = state.prefix;
+    const rootDirs = (state.root && state.root.dirs) || {};
+    if (p.length && segs[0] === p[0]) {
+      segs = segs.slice(p.length);                     // 前缀已并入根目录
+    } else if (segs.length && !(segs[0] in rootDirs) && pathResolves(segs.slice(1))) {
+      segs = segs.slice(1);                            // 兼容旧链接 #/JPG/上海/…
     }
     return segs;
   }
@@ -81,7 +87,7 @@
       els.search.value = '';
     }
     els.sidebar.classList.remove('open');
-    const target = '#/' + encodePath(fullPath(segs));
+    const target = '#/' + encodePath(segs);
     if (location.hash !== target) location.hash = target;
     else route();
   };
@@ -245,7 +251,7 @@
     els.breadcrumb.innerHTML = '';
     const root = document.createElement('button');          // 顶层 JPG 即根目录
     root.className = 'crumb' + (state.path.length || state.searchView ? '' : ' current');
-    root.textContent = state.prefix.join('/') || '全部';
+    root.textContent = '全部';
     root.addEventListener('click', () => navigate([]));
     els.breadcrumb.appendChild(root);
     state.path.forEach((seg, i) => {
@@ -401,7 +407,7 @@
     state.lbIndex = -1;
     // 从“直链打开单张照片”进入时，关闭后把地址栏还原成所在文件夹
     if (!silent && parseHash().join('/') !== state.path.join('/')) {
-      history.replaceState(null, '', '#/' + encodePath(fullPath(state.path)));
+      history.replaceState(null, '', '#/' + encodePath(state.path));
     }
   }
 
@@ -469,13 +475,11 @@
     .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
     .then((m) => {
       state.manifest = m;
-      // 顶层有 JPG 时直接把它当作根目录展示（其它顶层目录如 RAW 不进图库）
+      // 根上若还套着一层目录（旧清单的 JPG），自动下钻，图库直接从城市目录开始
       const keys = Object.keys(m.tree.dirs || {});
-      const hasFiles = (m.tree.files || []).length > 0;
-      const pick = keys.includes('JPG') ? 'JPG' : (keys.length === 1 ? keys[0] : null);
-      if (!hasFiles && pick) {
-        state.prefix = [pick];
-        state.root = m.tree.dirs[pick];
+      if (!m.root && !(m.tree.files || []).length && keys.length === 1) {
+        state.prefix = [keys[0]];
+        state.root = m.tree.dirs[keys[0]];
       } else {
         state.prefix = [];
         state.root = m.tree;

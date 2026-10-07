@@ -19,6 +19,7 @@ import json
 import os
 import re
 import sys
+import urllib.parse
 from datetime import datetime, timezone
 
 try:
@@ -147,23 +148,29 @@ def main() -> None:
         else:
             skipped += 1
 
-    # 只收录指定顶层目录（默认 JPG）下的照片，RAW/其它目录不进图库
+    # 只收录指定顶层目录（默认 JPG）下的照片，RAW/其它目录不进图库；
+    # 该前缀同时会从路径中剥掉，让图库根目录直接就是城市目录
     root = (args.root or "").strip().strip("/")
-    if root:
-        prefix = root + "/"
+    prefix = f"{root}/" if root else ""
+    if prefix:
         before = len(images)
-        images = [(p, s) for p, s in images if p.startswith(prefix)]
-        print(f"  限定目录 {root}/：{before} -> {len(images)} 张（排除 {before - len(images)} 张）")
+        images = [(p[len(prefix):], s) for p, s in images if p.startswith(prefix)]
+        print(f"  限定目录 {prefix}：{before} -> {len(images)} 张（排除 {before - len(images)} 张）")
 
     tree = build_tree(images)
     folders, total_images, total_bytes = count_stats(tree)
 
+    base = f"https://huggingface.co/datasets/{args.dataset}/resolve/{args.revision}/"
+    if prefix:
+        base += urllib.parse.quote(root) + "/"
+
     manifest = {
         "dataset": args.dataset,
         "revision": args.revision,
+        "root": root or "",                # 路径前缀已并入 base
         "source": f"https://huggingface.co/datasets/{args.dataset}",
         "treeUrl": f"https://huggingface.co/datasets/{args.dataset}/tree/{args.revision}",
-        "base": f"https://huggingface.co/datasets/{args.dataset}/resolve/{args.revision}/",
+        "base": base,
         "generatedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "totals": {"folders": folders, "images": total_images, "bytes": total_bytes},
         "tree": tree,
