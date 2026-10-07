@@ -47,10 +47,11 @@ python tools/build_manifest.py --dataset 其他用户/数据集 --revision main
 HF_TOKEN=hf_xxx python tools/build_manifest.py       # 数据集若转为私有时使用
 ```
 
-脚本只收录 `.jpg` / `.jpeg`（NEF/DNG/MOV 等原始文件会被忽略），并输出统计：
+脚本只收录 `.jpg` / `.jpeg`（NEF/DNG/MOV 等原始文件会被忽略），并默认**只统计 `JPG/` 目录**下的照片（`RAW/` 等其它顶层目录不进图库，可用 `--root` 改或传 `--root ''` 收录全部）：
 
 ```
-完成: 43 个文件夹 / 18,401 张图片 (271.4 GB)
+限定目录 JPG/：18401 -> 18400 张（排除 1 张）
+完成: 40 个文件夹 / 18,400 张图片 (271.4 GB)
 ```
 
 ## 自动更新
