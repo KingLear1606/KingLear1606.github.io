@@ -25,6 +25,8 @@
     searchView: false,   // 是否处于“全局搜索结果”视图
     lbIndex: -1,         // 灯箱当前照片在 state.files 中的下标
     countCache: new WeakMap(),
+    prefix: [],          // 顶层只有 JPG 时，把它当作根目录（URL 中仍保留 JPG 段）
+    root: null,          // 实际用于浏览的根节点
   };
 
   /* ------------------------------ 工具 ------------------------------ */
@@ -37,7 +39,7 @@
   const fmtNum = (n) => n.toLocaleString('zh-CN');
 
   const nodeAt = (path) => {
-    let node = state.manifest.tree;
+    let node = state.root;
     for (const seg of path) {
       node = node && node.dirs ? node.dirs[seg] : null;
       if (!node) return null;
@@ -61,11 +63,17 @@
   };
 
   const encodePath = (segs) => segs.map(encodeURIComponent).join('/');
-  const imageUrl = (segs) => state.manifest.base + encodePath(segs);
+  const imageUrl = (segs) => state.manifest.base + encodePath([...state.prefix, ...segs]);
+  const fullPath = (segs) => [...state.prefix, ...segs];   // 含顶层 JPG 的完整路径
 
   function parseHash() {
     const raw = location.hash.replace(/^#\/?/, '');
-    return raw ? raw.split('/').filter(Boolean).map(decodeURIComponent) : [];
+    let segs = raw ? raw.split('/').filter(Boolean).map(decodeURIComponent) : [];
+    const p = state.prefix;                                 // 兼容带 JPG 前缀的旧链接
+    if (p.length && segs.length >= p.length && p.every((s, i) => segs[i] === s)) {
+      segs = segs.slice(p.length);
+    }
+    return segs;
   }
   const navigate = (segs) => {
     if (state.query) {                 // 跳转文件夹时清空搜索
@@ -73,7 +81,7 @@
       els.search.value = '';
     }
     els.sidebar.classList.remove('open');
-    const target = '#/' + encodePath(segs);
+    const target = '#/' + encodePath(fullPath(segs));
     if (location.hash !== target) location.hash = target;
     else route();
   };
@@ -103,7 +111,7 @@
 
   /* ------------------------------ 视图数据 ------------------------------ */
   function buildView() {
-    const node = nodeAt(state.path) || state.manifest.tree;
+    const node = nodeAt(state.path) || state.root;
     state.dirs = Object.entries(node.dirs || {}).map(([name]) => ({ name, path: [...state.path, name] }));
     state.files = (node.files || []).map(([name, bytes]) => ({ name, bytes, dir: [...state.path], path: [...state.path, name] }));
     state.shown = Math.min(PAGE, state.files.length);
@@ -140,7 +148,7 @@
       }
       return { hitDir, hitFile };
     };
-    walk(state.manifest.tree, []);
+    walk(state.root, []);
 
     const seen = new Set();                    // collectAll 与文件名命中可能重复
     return {
@@ -177,8 +185,8 @@
   }
 
   function renderStats() {
-    const t = state.manifest.totals;
-    els.stats.textContent = `${fmtNum(t.folders)} 个文件夹 · ${fmtNum(t.images)} 张照片 · ${fmtBytes(t.bytes)}`;
+    const s = statsOf(state.root);
+    els.stats.textContent = `${fmtNum(s.dirs)} 个文件夹 · ${fmtNum(s.files)} 张照片 · ${fmtBytes(s.bytes)}`;
     document.title = state.path.length ? `${state.path[state.path.length - 1]} · 我的图库` : '我的图库';
   }
 
@@ -226,7 +234,7 @@
         parent.appendChild(li);
       }
     };
-    renderLevel(state.manifest.tree, [], ul);
+    renderLevel(state.root, [], ul);
     els.tree.appendChild(ul);
     if (!ul.childElementCount) {
       els.tree.innerHTML = '<div class="empty-note">没有匹配的文件夹</div>';
@@ -235,9 +243,9 @@
 
   function renderBreadcrumb() {
     els.breadcrumb.innerHTML = '';
-    const root = document.createElement('button');
-    root.className = 'crumb';
-    root.textContent = '全部';
+    const root = document.createElement('button');          // 顶层 JPG 即根目录
+    root.className = 'crumb' + (state.path.length || state.searchView ? '' : ' current');
+    root.textContent = state.prefix.join('/') || '全部';
     root.addEventListener('click', () => navigate([]));
     els.breadcrumb.appendChild(root);
     state.path.forEach((seg, i) => {
@@ -271,7 +279,7 @@
     if (state.searchView) {
       meta.push(`匹配 ${fmtNum(state.files.length)} 张照片，${fmtNum(state.dirs.length)} 个文件夹`);
     } else {
-      const node = nodeAt(state.path) || state.manifest.tree;
+      const node = nodeAt(state.path) || state.root;
       const s = statsOf(node);
       if (state.dirs.length) meta.push(`${fmtNum(state.dirs.length)} 个子文件夹`);
       if (s.files) meta.push(`${fmtNum(s.files)} 张照片（含子文件夹）`);
@@ -393,7 +401,7 @@
     state.lbIndex = -1;
     // 从“直链打开单张照片”进入时，关闭后把地址栏还原成所在文件夹
     if (!silent && parseHash().join('/') !== state.path.join('/')) {
-      history.replaceState(null, '', '#/' + encodePath(state.path));
+      history.replaceState(null, '', '#/' + encodePath(fullPath(state.path)));
     }
   }
 
@@ -461,6 +469,15 @@
     .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
     .then((m) => {
       state.manifest = m;
+      // 顶层只有一个文件夹（JPG）时，直接把它当作根目录展示
+      const keys = Object.keys(m.tree.dirs || {});
+      if (!(m.tree.files || []).length && keys.length === 1) {
+        state.prefix = [keys[0]];
+        state.root = m.tree.dirs[keys[0]];
+      } else {
+        state.prefix = [];
+        state.root = m.tree;
+      }
       route();
     })
     .catch((err) => {
