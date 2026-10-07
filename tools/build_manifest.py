@@ -122,6 +122,11 @@ def main() -> None:
     parser.add_argument("-o", "--output", default=None, help="输出文件路径，默认 <repo>/manifest.json")
     parser.add_argument("--dataset", default=DATASET, help="HF 数据集 id，如 owner/name")
     parser.add_argument("--revision", default=REVISION, help="分支/revision，默认 main")
+    parser.add_argument(
+        "--root",
+        default=os.environ.get("MANIFEST_ROOT", "JPG"),
+        help="只收录该顶层目录下的照片（默认 JPG；传空字符串表示收录全部）",
+    )
     args = parser.parse_args()
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -142,8 +147,17 @@ def main() -> None:
         else:
             skipped += 1
 
+    # 只收录指定顶层目录（默认 JPG）下的照片，RAW/其它目录不进图库
+    root = (args.root or "").strip().strip("/")
+    if root:
+        prefix = root + "/"
+        before = len(images)
+        images = [(p, s) for p, s in images if p.startswith(prefix)]
+        print(f"  限定目录 {root}/：{before} -> {len(images)} 张（排除 {before - len(images)} 张）")
+
     tree = build_tree(images)
     folders, total_images, total_bytes = count_stats(tree)
+
     manifest = {
         "dataset": args.dataset,
         "revision": args.revision,

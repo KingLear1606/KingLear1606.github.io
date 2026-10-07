@@ -469,11 +469,13 @@
     .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
     .then((m) => {
       state.manifest = m;
-      // 顶层只有一个文件夹（JPG）时，直接把它当作根目录展示
+      // 顶层有 JPG 时直接把它当作根目录展示（其它顶层目录如 RAW 不进图库）
       const keys = Object.keys(m.tree.dirs || {});
-      if (!(m.tree.files || []).length && keys.length === 1) {
-        state.prefix = [keys[0]];
-        state.root = m.tree.dirs[keys[0]];
+      const hasFiles = (m.tree.files || []).length > 0;
+      const pick = keys.includes('JPG') ? 'JPG' : (keys.length === 1 ? keys[0] : null);
+      if (!hasFiles && pick) {
+        state.prefix = [pick];
+        state.root = m.tree.dirs[pick];
       } else {
         state.prefix = [];
         state.root = m.tree;
