@@ -80,8 +80,9 @@
   const tileUrl = (segs, forceOriginal) =>
     (state.thumbs && !forceOriginal) ? thumbUrl(segs) : imageUrl(segs);
 
-  // 只有显式存过 '1' 才用缩略图；没存过（以及隐私模式）一律默认原图
-  const THUMB_PREF = 'gallery:thumbs';
+  // 偏好只认这一版 key：老版本存的 '1'（当时默认缩略图）不再沿用，
+  // 这样「默认加载原图」对所有浏览器都生效；之后用户自己切的选择会被记住。
+  const THUMB_PREF = 'gallery:thumbs:v2';
   const loadThumbPref = () => { try { return localStorage.getItem(THUMB_PREF) === '1'; } catch (e) { return false; } };
   const saveThumbPref = (v) => { try { localStorage.setItem(THUMB_PREF, v ? '1' : '0'); } catch (e) { /* 隐私模式下忽略 */ } };
 

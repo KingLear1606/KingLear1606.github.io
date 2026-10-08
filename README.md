@@ -69,6 +69,26 @@ python -m http.server 8000
 # 打开 http://localhost:8000
 ```
 
+## 改完前端记得 bump 版本号
+
+GitHub Pages 对静态资源发的是 `Cache-Control: max-age=600`，浏览器会把 `assets/app.js`
+和 `assets/style.css` 缓存 10 分钟——只 push 不改 URL 的话，用户那边可能还在跑旧代码，
+看起来「改动没生效」。
+
+所以**每次改 `assets/` 下的文件**，把 `index.html` 里两个引用后面的 `?v=` 串改掉：
+
+```html
+<link rel="stylesheet" href="assets/style.css?v=20261008a" />
+<script src="assets/app.js?v=20261008a"></script>
+```
+
+串随便取（建议用日期+字母），和上次不同即可，用户普通刷新就能拿到新版本。
+用户自己被强制硬刷（Ctrl+F5）也能解决，但 bump 版本号更省事。
+
+同理，若要**改变默认行为**（比如缩略图/原图的默认值），别只改判断逻辑——
+`localStorage` 里可能还存着旧偏好的值。给 key 加个版本后缀
+（`gallery:thumbs` → `gallery:thumbs:v2`），新默认值才会对所有浏览器生效。
+
 ## 说明 / 安全
 
 - 站点不包含任何 token，图片全部走 Hugging Face 公开直链。
