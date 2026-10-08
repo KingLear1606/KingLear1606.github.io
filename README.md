@@ -25,6 +25,8 @@ KingLear1606.github.io/
 - 左侧文件夹树 + 面包屑导航，完整还原 `JPG/城市/…` 的原始层级
 - 首页文件夹卡片显示每个目录的照片数量
 - 网格瀑布式浏览，**每页最多 50 张 + 页码跳转**（底部可翻页，也可用 `←` `→` 翻页）
+- **图片默认走 [hf-mirror.com](https://hf-mirror.com) 镜像站**（只换主机名，路径与清单一致；
+  官方站直连慢时切换更稳）——顶栏「镜像 / 官方」按钮可随时切换，选择会被记住
 - **网格默认直接加载原图**（中位数约 15MB/张）：滚动到哪张才下哪张，队列并发自适应（8 路起，失败就砍），
   所以翻页很快、画质是原图；顶栏「原图 / 缩略图」按钮可切到**缩略图模式**——
   通过 [wsrv.nl](https://wsrv.nl) 代理按需缩放成 480px WebP（约 15~25KB/张），一屏几十张也只拉几 MB（选择会被记住）
@@ -78,8 +80,8 @@ GitHub Pages 对静态资源发的是 `Cache-Control: max-age=600`，浏览器�
 所以**每次改 `assets/` 下的文件**，把 `index.html` 里两个引用后面的 `?v=` 串改掉：
 
 ```html
-<link rel="stylesheet" href="assets/style.css?v=20261008a" />
-<script src="assets/app.js?v=20261008a"></script>
+<link rel="stylesheet" href="assets/style.css?v=20261008b" />
+<script src="assets/app.js?v=20261008b"></script>
 ```
 
 串随便取（建议用日期+字母），和上次不同即可，用户普通刷新就能拿到新版本。
@@ -91,7 +93,8 @@ GitHub Pages 对静态资源发的是 `Cache-Control: max-age=600`，浏览器�
 
 ## 说明 / 安全
 
-- 站点不包含任何 token，图片全部走 Hugging Face 公开直链。
+- 站点不包含任何 token，图片全部走 Hugging Face 公开直链（默认经 hf-mirror.com 镜像，内容与官方站一致）。
+  镜像站是第三方服务，若担心可用性可点顶栏「官方」切回 `huggingface.co`。
 - 默认直接拉原图（原图中位数约 15MB/张，只有滚动到视口里的瓦片才会发请求，并发由队列限流）；
   切到缩略图模式时才会用到免费的 wsrv.nl 代理（它先取一次原图再缩放并缓存 7~31 天，源站仍是 HF 直链）。
   缩略图偶发被源站限流时会自动退避重试（1.5s / 6s 各一次）；仍失败时只显示「点击加载原图」，不会悄悄替你下载大图。

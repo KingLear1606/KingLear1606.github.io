@@ -11,7 +11,7 @@
     pager: $('pager'), prevPage: $('prevPage'), nextPage: $('nextPage'),
     pageList: $('pageList'), pageInfo: $('pageInfo'),
     search: $('search'), searchClear: $('searchClear'),
-    sidebarToggle: $('sidebarToggle'), thumbToggle: $('thumbToggle'),
+    sidebarToggle: $('sidebarToggle'), thumbToggle: $('thumbToggle'), mirrorToggle: $('mirrorToggle'),
     lightbox: $('lightbox'), lbImage: $('lbImage'), lbTitle: $('lbTitle'), lbCount: $('lbCount'),
     lbCaption: $('lbCaption'), lbPrev: $('lbPrev'), lbNext: $('lbNext'), lbClose: $('lbClose'),
     lbOpen: $('lbOpen'), lbDownload: $('lbDownload'),
@@ -30,6 +30,7 @@
     prefix: [],          // 清单根上若还套着一层目录（如旧清单的 JPG），用于拼图片地址
     root: null,          // 根节点：图库直接从城市目录这一层开始
     thumbs: false,       // 网格是否只加载缩略图（默认 false = 直接加载原图；灯箱始终用原图）
+    mirror: true,       // 是否走 hf-mirror.com 镜像站（默认 true；顶栏可切回官方站）
   };
 
   /* ------------------------------ 工具 ------------------------------ */
@@ -66,7 +67,25 @@
   };
 
   const encodePath = (segs) => segs.map(encodeURIComponent).join('/');
-  const imageUrl = (segs) => state.manifest.base + encodePath([...state.prefix, ...segs]);
+
+  /* --------------------------- HF 镜像站 --------------------------- */
+  // 清单里的 base 写的是 huggingface.co，国内直连经常很慢甚至连不上。
+  // 这里默认把主机名换成 hf-mirror.com（只换主机，路径原样保留），
+  // 顶栏可随时切回官方站；选择记在 localStorage。
+  const HF_OFFICIAL = 'https://huggingface.co';
+  const HF_MIRROR = 'https://hf-mirror.com';
+  const MIRROR_PREF = 'gallery:mirror';
+  const loadMirrorPref = () => { try { return localStorage.getItem(MIRROR_PREF) !== '0'; } catch (e) { return true; } };
+  const saveMirrorPref = (v) => { try { localStorage.setItem(MIRROR_PREF, v ? '1' : '0'); } catch (e) { /* 隐私模式下忽略 */ } };
+
+  // 清单 base = https://huggingface.co/datasets/<ds>/resolve/<rev>/[root/]
+  // 镜像只需替换开头的主机名，其余（含已百分号编码的路径）原样拼上
+  const officialUrl = (segs) => state.manifest.base + encodePath([...state.prefix, ...segs]);
+  const imageUrl = (segs) => {
+    const official = officialUrl(segs);
+    if (!state.mirror) return official;
+    return official.replace(HF_OFFICIAL, HF_MIRROR);
+  };
 
   /* --------------------------- 缩略图 --------------------------- */
   // 默认直接加载原图（最高画质）；需要省流量时可在顶栏切到缩略图：
@@ -590,7 +609,8 @@
     els.lbTitle.textContent = file.path.join(' / ');
     els.lbCount.textContent = `${fmtNum(index + 1)} / ${fmtNum(state.files.length)}`;
     els.lbCaption.textContent = `${file.name} · ${fmtBytes(file.bytes)}`;
-    els.lbOpen.href = src;
+    // 下载/跳转按当前线路走；「在 HF 打开」指向官方站（镜像站的网页版 UI 没有意义）
+    els.lbOpen.href = officialUrl(file.path);
     els.lbDownload.href = src;
     els.lbDownload.setAttribute('download', file.name);
     els.lbPrev.disabled = index === 0;
@@ -676,6 +696,22 @@
     render();
   });
 
+  /* --------------------------- 镜像站开关 --------------------------- */
+  // 按钮文字显示的是「当前线路」：默认镜像站，点一下切回官方站
+  function syncMirrorBtn() {
+    els.mirrorToggle.textContent = state.mirror ? '镜像' : '官方';
+    els.mirrorToggle.setAttribute('aria-pressed', String(state.mirror));
+    els.mirrorToggle.title = state.mirror
+      ? `图片来自 ${HF_MIRROR}，点击切回官方站 ${HF_OFFICIAL}`
+      : `图片来自 ${HF_OFFICIAL} 官方站，点击切到镜像站 ${HF_MIRROR}`;
+  }
+  els.mirrorToggle.addEventListener('click', () => {
+    state.mirror = !state.mirror;
+    saveMirrorPref(state.mirror);
+    syncMirrorBtn();
+    render();          // 换线路要把当前视图的图片全部重拉
+  });
+
   // 翻页：键盘 ← → （灯箱打开时是上一张/下一张，这里是上一页/下一页）
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
@@ -703,7 +739,9 @@
 
   /* ------------------------------ 启动 ------------------------------ */
   state.thumbs = loadThumbPref();
+  state.mirror = loadMirrorPref();
   syncThumbBtn();
+  syncMirrorBtn();
   fetch('manifest.json', { cache: 'no-cache' })
     .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
     .then((m) => {
