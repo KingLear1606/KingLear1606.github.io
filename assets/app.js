@@ -69,9 +69,13 @@
   const encodePath = (segs) => segs.map(encodeURIComponent).join('/');
 
   /* --------------------------- HF 镜像站 --------------------------- */
-  // 清单里的 base 写的是 huggingface.co，国内直连经常很慢甚至连不上。
-  // 这里默认把主机名换成 hf-mirror.com（只换主机，路径原样保留），
+  // 清单里的 base 写的是 huggingface.co，默认把主机名换成 hf-mirror.com，
   // 顶栏可随时切回官方站；选择记在 localStorage。
+  //
+  // 注意：hf-mirror.com 对没缓存过的文件只是 302 跳到 HF 的海外 CDN
+  // （cas-bridge.xethub.hf.co，cache-control: no-store），并没有把大图留在国内。
+  // 所以「镜像 / 官方」能不能用取决于那个 CDN 通不通，两条线路必须互相兜底
+  // （见下面的 candidatesFor）。
   const HF_OFFICIAL = 'https://huggingface.co';
   const HF_MIRROR = 'https://hf-mirror.com';
   const MIRROR_PREF = 'gallery:mirror';
@@ -81,23 +85,28 @@
   // 清单 base = https://huggingface.co/datasets/<ds>/resolve/<rev>/[root/]
   // 镜像只需替换开头的主机名，其余（含已百分号编码的路径）原样拼上
   const officialUrl = (segs) => state.manifest.base + encodePath([...state.prefix, ...segs]);
-  const imageUrl = (segs) => {
-    const official = officialUrl(segs);
-    if (!state.mirror) return official;
-    return official.replace(HF_OFFICIAL, HF_MIRROR);
-  };
+  const urlOn = (segs, mirror) =>
+    mirror ? officialUrl(segs).replace(HF_OFFICIAL, HF_MIRROR) : officialUrl(segs);
+  const imageUrl = (segs) => urlOn(segs, state.mirror);
 
-  /* --------------------------- 缩略图 --------------------------- */
+  /* --------------------------- 缩略图 / 取图地址 --------------------------- */
   // 默认直接加载原图（最高画质）；需要省流量时可在顶栏切到缩略图：
   // 走 wsrv.nl 图片代理按需缩放（480px WebP，约 15~25KB），代理端会缓存结果。
   // 无论哪种模式，灯箱 / 下载 / “在 HF 打开”始终用原图。
   const THUMB_EDGE = 480;
-  const thumbUrl = (segs) =>
-    `https://wsrv.nl/?url=${encodeURIComponent(imageUrl(segs))}` +
+  const proxyUrl = (url) =>
+    `https://wsrv.nl/?url=${encodeURIComponent(url)}` +
     `&w=${THUMB_EDGE}&h=${THUMB_EDGE}&fit=inside&output=webp&q=70`;
 
-  const tileUrl = (segs, forceOriginal) =>
-    (state.thumbs && !forceOriginal) ? thumbUrl(segs) : imageUrl(segs);
+  // 一张图要依次尝试的候选地址：先当前线路的原图，
+  // 再另一条线路（换 CDN 域名，往往就是这一步救回来的），
+  // 最后是 wsrv.nl 代理（代理在墙外，由它去取原图）
+  const candidatesFor = (segs) => {
+    const primary = urlOn(segs, state.mirror);
+    const other = urlOn(segs, !state.mirror);
+    if (state.thumbs) return [proxyUrl(primary), proxyUrl(other), primary, other];
+    return [primary, other, proxyUrl(primary)];
+  };
 
   // 偏好只认这一版 key：老版本存的 '1'（当时默认缩略图）不再沿用，
   // 这样「默认加载原图」对所有浏览器都生效；之后用户自己切的选择会被记住。
@@ -511,6 +520,9 @@
 
   const RETRY_DELAYS = [1500, 6000];   // 缩略图被源站限流时的退避重试（实测隔几秒基本能恢复）
 
+  // 同一条线路上的重试（限流/抖动这类瞬时问题）
+  const retryLater = (fn, delay) => setTimeout(fn, delay);
+
   function createTile(file, index) {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -522,8 +534,8 @@
     badges.innerHTML = `<span class="badge">${fmtBytes(file.bytes)}</span>`;
 
     let gen = 0;          // 每次重建图片 +1，用来丢弃过期的重试/回调
-    let tries = 0;        // 缩略图已重试次数
-    let mode = '';        // '' = 按全局设置；'original' = 这张瓦片强制用原图
+    let cand = 0;         // 当前试到候选地址里的第几个
+    let sameLine = 0;     // 在同一地址上连续失败几次（限流是瞬时的，退避再试）
 
     // 构造 <img> 并排进加载队列：真正发请求的时机和并发都由队列控制
     const show = (bust) => {
@@ -531,9 +543,11 @@
       btn.classList.remove('done', 'failed');
       btn.innerHTML = '';
 
-      const wasThumb = state.thumbs && mode !== 'original';
-      let url = tileUrl(file.path, mode === 'original');
+      const list = candidatesFor(file.path);
+      cand = Math.min(cand, list.length - 1);
+      let url = list[cand];
       if (bust) url += (url.includes('?') ? '&' : '?') + 'r=' + bust;
+      const isProxy = url.startsWith('https://wsrv.nl/');
 
       const img = document.createElement('img');
       img.alt = file.name;
@@ -541,7 +555,9 @@
 
       const job = {
         urgent: false,
-        hold: !wasThumb,            // 原图 15MB/张：等进入视口再发，别整页预热
+        // 原图 15MB/张：等进入视口再发，别整页预热。
+        // 走代理的缩略图很小，可以继续预热。
+        hold: !isProxy,
         run: (done) => {
           img.addEventListener('load', () => {
             done(true);
@@ -552,7 +568,7 @@
           img.addEventListener('error', () => {
             done(false);
             if (g !== gen) return;
-            onError(wasThumb);
+            onError();
           }, { once: true });
           img.src = url;
         },
@@ -565,28 +581,34 @@
       loader.add(job);
     };
 
-    const onError = (wasThumb) => {
-      if (wasThumb && tries < RETRY_DELAYS.length) {      // 限流是瞬时的，先退避重试
-        const delay = RETRY_DELAYS[tries];
-        tries += 1;
+    // 失败处理：先在当前地址上退避重试（限流/抖动），
+    // 还是不行就换下一个候选地址（换线路 / 最后走代理），
+    // 全部用完才显示失败文案——这样单条线路不通不会整页变红。
+    const onError = () => {
+      if (sameLine < RETRY_DELAYS.length) {          // 同一地址：限流/抖动，退避再试
+        const delay = RETRY_DELAYS[sameLine];
+        sameLine += 1;
         const g = gen;
-        setTimeout(() => { if (g === gen) show(Date.now()); }, delay);
+        retryLater(() => { if (g === gen) show(Date.now()); }, delay);
+        return;
+      }
+      const list = candidatesFor(file.path);
+      if (cand + 1 < list.length) {                 // 换下一条候选（换线路 / 最后走代理）
+        cand += 1;
+        sameLine = 0;
+        const g = gen;
+        retryLater(() => { if (g === gen) show(Date.now()); }, 250);
         return;
       }
       btn.classList.add('done', 'failed');
-      if (wasThumb) {
-        // 仍失败就不自动去拉十几 MB 的原图，交给用户点一下决定
-        mode = 'original';
-        btn.innerHTML = '<span class="err">😵 缩略图加载失败<br>点击加载原图</span>';
-      } else {
-        btn.innerHTML = '<span class="err">😵 图片加载失败<br>点击重试</span>';
-      }
+      btn.innerHTML = '<span class="err">😵 图片加载失败<br>点击重试</span>';
     };
 
     show();
     btn.addEventListener('click', () => {
       if (btn.classList.contains('failed')) {      // 失败重试（不再打开灯箱）
-        tries = 0;
+        cand = 0;
+        sameLine = 0;
         show(Date.now());
         return;
       }
@@ -618,22 +640,22 @@
 
     els.lbImage.classList.add('loading');
     els.lbImage.alt = file.name;
-    // 先秒显网格里已缓存的缩略图，原图（中位数 15MB，跨海约 7s）后台下完再无缝替换
-    const placeholder = state.thumbs ? thumbUrl(file.path) : src;
-    els.lbImage.src = placeholder;
-    if (placeholder !== src) {
-      const hiRes = new Image();
-      hiRes.onload = () => {
-        if (state.lbIndex !== index || els.lightbox.hidden) return;
-        els.lbImage.src = hiRes.src;
-      };
-      hiRes.src = src;
-    }
+    // 灯箱同样要能兜底：当前线路不通就换另一条，最后退到 wsrv.nl 代理
+    const lbList = candidatesFor(file.path);
+    let lbCand = 0;
+    const lbTry = () => {
+      els.lbImage.src = lbList[lbCand];
+    };
+    els.lbImage.onerror = () => {
+      if (state.lbIndex !== index || els.lightbox.hidden) return;
+      if (lbCand + 1 < lbList.length) { lbCand += 1; lbTry(); }
+    };
+    lbTry();
 
-    // 预取前后各一张（只预取缩略图，避免每次翻页多下 30MB 原图）
+    // 预取前后各一张（缩略图模式下用小图预热，避免每次翻页多下 30MB 原图）
     [index - 1, index + 1].forEach((i) => {
       if (state.thumbs && i >= 0 && i < state.files.length) {
-        const p = new Image(); p.src = thumbUrl(state.files[i].path);
+        const p = new Image(); p.src = proxyUrl(imageUrl(state.files[i].path));
       }
     });
   }
