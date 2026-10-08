@@ -9,7 +9,7 @@
     stats: $('stats'), tree: $('tree'), sidebar: $('sidebar'), breadcrumb: $('breadcrumb'),
     folderMeta: $('folderMeta'), grid: $('grid'), empty: $('empty'), sentinel: $('sentinel'),
     loadMore: $('loadMore'), search: $('search'), searchClear: $('searchClear'),
-    sidebarToggle: $('sidebarToggle'),
+    sidebarToggle: $('sidebarToggle'), thumbToggle: $('thumbToggle'),
     lightbox: $('lightbox'), lbImage: $('lbImage'), lbTitle: $('lbTitle'), lbCount: $('lbCount'),
     lbCaption: $('lbCaption'), lbPrev: $('lbPrev'), lbNext: $('lbNext'), lbClose: $('lbClose'),
     lbOpen: $('lbOpen'), lbDownload: $('lbDownload'),
@@ -27,6 +27,7 @@
     countCache: new WeakMap(),
     prefix: [],          // 清单根上若还套着一层目录（如旧清单的 JPG），用于拼图片地址
     root: null,          // 根节点：图库直接从城市目录这一层开始
+    thumbs: true,        // 网格是否只加载缩略图（灯箱始终用原图）
   };
 
   /* ------------------------------ 工具 ------------------------------ */
@@ -64,6 +65,21 @@
 
   const encodePath = (segs) => segs.map(encodeURIComponent).join('/');
   const imageUrl = (segs) => state.manifest.base + encodePath([...state.prefix, ...segs]);
+
+  /* --------------------------- 缩略图 --------------------------- */
+  // 原图中位数约 15MB，网格走 wsrv.nl 图片代理按需缩放（600px WebP，约 20~40KB），
+  // 代理端会缓存结果；灯箱 / 下载 / “在 HF 打开”仍然用原图。
+  const THUMB_EDGE = 600;
+  const thumbUrl = (segs) =>
+    `https://wsrv.nl/?url=${encodeURIComponent(imageUrl(segs))}` +
+    `&w=${THUMB_EDGE}&h=${THUMB_EDGE}&fit=inside&output=webp&q=72`;
+
+  const tileUrl = (segs, forceOriginal) =>
+    (state.thumbs && !forceOriginal) ? thumbUrl(segs) : imageUrl(segs);
+
+  const THUMB_PREF = 'gallery:thumbs';
+  const loadThumbPref = () => { try { return localStorage.getItem(THUMB_PREF) !== '0'; } catch (e) { return true; } };
+  const saveThumbPref = (v) => { try { localStorage.setItem(THUMB_PREF, v ? '1' : '0'); } catch (e) { /* 隐私模式下忽略 */ } };
 
   // 路径是否能解析到某个文件夹（末段允许是文件名）
   const pathResolves = (s) =>
@@ -336,7 +352,11 @@
     btn.className = 'tile';
     btn.title = `${file.name} · ${fmtBytes(file.bytes)}`;
 
-    const attach = (url) => {
+    const badges = document.createElement('span');
+    badges.className = 'badges';
+    badges.innerHTML = `<span class="badge">${fmtBytes(file.bytes)}</span>`;
+
+    const attach = (url, wasThumb) => {
       const img = document.createElement('img');
       img.alt = file.name;
       img.loading = 'lazy';
@@ -344,24 +364,38 @@
       img.src = url;
       img.addEventListener('load', () => { img.classList.add('loaded'); btn.classList.add('done'); });
       img.addEventListener('error', () => {
+        if (wasThumb && !btn.dataset.retried) {      // 代理偶发被源站限流，自动重试一次
+          btn.dataset.retried = '1';
+          show(Date.now());
+          return;
+        }
         btn.classList.add('done', 'failed');
-        btn.innerHTML = '<span class="err">😵 图片加载失败<br>点击重试</span>';
+        if (wasThumb) {
+          // 缩略图仍失败时不自动去拉十几 MB 的原图，交给用户点一下决定
+          btn.dataset.mode = 'original';
+          btn.innerHTML = '<span class="err">😵 缩略图加载失败<br>点击加载原图</span>';
+        } else {
+          btn.innerHTML = '<span class="err">😵 图片加载失败<br>点击重试</span>';
+        }
       });
       return img;
     };
 
-    const badges = document.createElement('span');
-    badges.className = 'badges';
-    badges.innerHTML = `<span class="badge">${fmtBytes(file.bytes)}</span>`;
+    // bust: 重试时加的时间戳，绕开失败的缓存
+    const show = (bust) => {
+      btn.classList.remove('done', 'failed');
+      btn.innerHTML = '';
+      const wasThumb = state.thumbs && btn.dataset.mode !== 'original';
+      let url = tileUrl(file.path, btn.dataset.mode === 'original');
+      if (bust) url += (url.includes('?') ? '&' : '?') + 'r=' + bust;
+      btn.appendChild(attach(url, wasThumb));
+      btn.appendChild(badges);
+    };
 
-    btn.appendChild(attach(imageUrl(file.path)));
-    btn.appendChild(badges);
+    show();
     btn.addEventListener('click', () => {
       if (btn.classList.contains('failed')) {      // 失败重试（不再打开灯箱）
-        btn.classList.remove('done', 'failed');
-        btn.innerHTML = '';
-        btn.appendChild(attach(`${imageUrl(file.path)}?r=${Date.now()}`));
-        btn.appendChild(badges);
+        show(Date.now());
         return;
       }
       openLightbox(index);
@@ -440,6 +474,21 @@
   });
   els.sidebarToggle.addEventListener('click', () => els.sidebar.classList.toggle('open'));
 
+  /* --------------------------- 缩略图开关 --------------------------- */
+  function syncThumbBtn() {
+    els.thumbToggle.textContent = state.thumbs ? '缩略图' : '原图';
+    els.thumbToggle.setAttribute('aria-pressed', String(state.thumbs));
+    els.thumbToggle.title = state.thumbs
+      ? `网格只加载缩略图（约 ${THUMB_EDGE}px / 张），点击切换为原图`
+      : '网格直接加载原图（中位数约 15MB / 张），点击切回缩略图';
+  }
+  els.thumbToggle.addEventListener('click', () => {
+    state.thumbs = !state.thumbs;
+    saveThumbPref(state.thumbs);
+    syncThumbBtn();
+    render();
+  });
+
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (!els.lightbox.hidden) closeLightbox(false);
@@ -471,6 +520,8 @@
   window.addEventListener('hashchange', route);
 
   /* ------------------------------ 启动 ------------------------------ */
+  state.thumbs = loadThumbPref();
+  syncThumbBtn();
   fetch('manifest.json', { cache: 'no-cache' })
     .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
     .then((m) => {
