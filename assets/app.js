@@ -29,7 +29,7 @@
     countCache: new WeakMap(),
     prefix: [],          // 清单根上若还套着一层目录（如旧清单的 JPG），用于拼图片地址
     root: null,          // 根节点：图库直接从城市目录这一层开始
-    thumbs: true,        // 网格是否只加载缩略图（灯箱始终用原图）
+    thumbs: false,       // 网格是否只加载缩略图（默认 false = 直接加载原图；灯箱始终用原图）
   };
 
   /* ------------------------------ 工具 ------------------------------ */
@@ -69,8 +69,9 @@
   const imageUrl = (segs) => state.manifest.base + encodePath([...state.prefix, ...segs]);
 
   /* --------------------------- 缩略图 --------------------------- */
-  // 原图中位数约 15MB，网格走 wsrv.nl 图片代理按需缩放（480px WebP，约 15~25KB），
-  // 代理端会缓存结果；灯箱 / 下载 / “在 HF 打开”仍然用原图。
+  // 默认直接加载原图（最高画质）；需要省流量时可在顶栏切到缩略图：
+  // 走 wsrv.nl 图片代理按需缩放（480px WebP，约 15~25KB），代理端会缓存结果。
+  // 无论哪种模式，灯箱 / 下载 / “在 HF 打开”始终用原图。
   const THUMB_EDGE = 480;
   const thumbUrl = (segs) =>
     `https://wsrv.nl/?url=${encodeURIComponent(imageUrl(segs))}` +
@@ -79,8 +80,9 @@
   const tileUrl = (segs, forceOriginal) =>
     (state.thumbs && !forceOriginal) ? thumbUrl(segs) : imageUrl(segs);
 
+  // 只有显式存过 '1' 才用缩略图；没存过（以及隐私模式）一律默认原图
   const THUMB_PREF = 'gallery:thumbs';
-  const loadThumbPref = () => { try { return localStorage.getItem(THUMB_PREF) !== '0'; } catch (e) { return true; } };
+  const loadThumbPref = () => { try { return localStorage.getItem(THUMB_PREF) === '1'; } catch (e) { return false; } };
   const saveThumbPref = (v) => { try { localStorage.setItem(THUMB_PREF, v ? '1' : '0'); } catch (e) { /* 隐私模式下忽略 */ } };
 
   /* --------------------------- 图片加载调度 --------------------------- */
@@ -88,6 +90,8 @@
   // （wsrv 去 HF 拉原图被 403，回给我们 404 → 白白重试更慢）。
   // 统一走两级队列：已进入视口的瓦片优先，其余当作预热排队，
   // 这样打开文件夹时首屏最快，往下滚时图基本已经是热的。
+  // 原图模式下例外：一张约 15MB，整页 50 张不能盲预热，
+  // 所以 hold 的任务只等瓦片进入视口（rootMargin 600px）才真正发请求。
   const LOADER_LIMIT_MIN = 4;             // 失败时退避收缩，实测 8 路 0 失败、20 路开始出 404
   const LOADER_LIMIT_MAX = 16;
   const loader = {
@@ -97,14 +101,18 @@
 
     add(job) {
       this.pending.add(job);
+      if (job.hold) return;                // 等瓦片进入视口再排队（见 promote）
       (job.urgent ? this.hi : this.lo).push(job);
       this.pump();
     },
     promote(job) {                          // 瓦片进入视口 → 提到队首
-      if (!this.pending.has(job) || job.urgent) return;
+      if (!this.pending.has(job) || job.urgent) return;   // 不在 pending = 已开始跑，别重复发
       job.urgent = true;
+      job.hold = false;
       const i = this.lo.indexOf(job);
-      if (i >= 0) { this.lo.splice(i, 1); this.hi.push(job); }
+      if (i >= 0) this.lo.splice(i, 1);
+      this.hi.push(job);                    // 被 hold 拦下过的任务没进过队列，这里必须补进
+      this.pump();
     },
     clear() {                               // 重新渲染时丢弃还没开始的任务（进行中的会自然收尾）
       this.hi.length = 0;
@@ -513,6 +521,7 @@
 
       const job = {
         urgent: false,
+        hold: !wasThumb,            // 原图 15MB/张：等进入视口再发，别整页预热
         run: (done) => {
           img.addEventListener('load', () => {
             done(true);
@@ -651,12 +660,13 @@
   els.sidebarToggle.addEventListener('click', () => els.sidebar.classList.toggle('open'));
 
   /* --------------------------- 缩略图开关 --------------------------- */
+  // 按钮文字显示的是「当前模式」：默认原图，点一下切到缩略图，再点切回原图
   function syncThumbBtn() {
     els.thumbToggle.textContent = state.thumbs ? '缩略图' : '原图';
     els.thumbToggle.setAttribute('aria-pressed', String(state.thumbs));
     els.thumbToggle.title = state.thumbs
       ? `网格只加载缩略图（约 ${THUMB_EDGE}px / 张），点击切换为原图`
-      : '网格直接加载原图（中位数约 15MB / 张），点击切回缩略图';
+      : '网格直接加载原图（中位数约 15MB / 张，滚动到哪张才下哪张），点击切回缩略图';
   }
   els.thumbToggle.addEventListener('click', () => {
     state.thumbs = !state.thumbs;
