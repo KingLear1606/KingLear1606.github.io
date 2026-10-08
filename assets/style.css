@@ -178,13 +178,35 @@ button { font: inherit; color: inherit; }
   color: var(--fg-dim); font-size: 12.5px; padding: 8px; text-align: center;
 }
 
-/* ---------------------------- 其它 ---------------------------- */
-.sentinel { display: flex; justify-content: center; padding: 26px 0 10px; }
+/* ---------------------------- 分页 ---------------------------- */
 .btn {
   padding: 9px 20px; border-radius: 999px; border: 1px solid var(--line);
   background: var(--bg-2); cursor: pointer;
 }
 .btn:hover { border-color: var(--accent); color: var(--accent); }
+.pager {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+  gap: 8px; padding: 26px 0 10px;
+}
+.pager .btn { padding: 7px 14px; font-size: 13px; }
+.pager .btn:disabled { opacity: .4; cursor: default; color: var(--fg-dim); }
+.pager .btn:disabled:hover { border-color: var(--line); color: var(--fg-dim); }
+.page-list { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.page-btn {
+  min-width: 32px; height: 32px; padding: 0 8px;
+  border: 1px solid transparent; border-radius: 8px; background: transparent;
+  cursor: pointer; color: var(--fg-dim); font-variant-numeric: tabular-nums;
+}
+.page-btn:hover { background: var(--bg-3); color: var(--fg); }
+.page-btn.active {
+  background: var(--accent-soft); border-color: var(--accent);
+  color: var(--accent); font-weight: 600; cursor: default;
+}
+.page-gap { padding: 0 2px; color: var(--fg-dim); }
+.page-info {
+  width: 100%; text-align: center; color: var(--fg-dim);
+  font-size: 12.5px; font-variant-numeric: tabular-nums;
+}
 .empty { padding: 60px 10px; text-align: center; color: var(--fg-dim); }
 .empty .big { font-size: 40px; margin-bottom: 10px; }
 .error-box {

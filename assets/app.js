@@ -2,13 +2,15 @@
 (() => {
   'use strict';
 
-  const PAGE = 48; // 每批渲染的照片数量（原图约 15MB/张，按需加载）
+  const PAGE = 50; // 每页最多显示的照片数量（原图约 15MB/张，按需加载）
 
   const $ = (id) => document.getElementById(id);
   const els = {
     stats: $('stats'), tree: $('tree'), sidebar: $('sidebar'), breadcrumb: $('breadcrumb'),
-    folderMeta: $('folderMeta'), grid: $('grid'), empty: $('empty'), sentinel: $('sentinel'),
-    loadMore: $('loadMore'), search: $('search'), searchClear: $('searchClear'),
+    folderMeta: $('folderMeta'), grid: $('grid'), empty: $('empty'),
+    pager: $('pager'), prevPage: $('prevPage'), nextPage: $('nextPage'),
+    pageList: $('pageList'), pageInfo: $('pageInfo'),
+    search: $('search'), searchClear: $('searchClear'),
     sidebarToggle: $('sidebarToggle'), thumbToggle: $('thumbToggle'),
     lightbox: $('lightbox'), lbImage: $('lbImage'), lbTitle: $('lbTitle'), lbCount: $('lbCount'),
     lbCaption: $('lbCaption'), lbPrev: $('lbPrev'), lbNext: $('lbNext'), lbClose: $('lbClose'),
@@ -20,7 +22,7 @@
     path: [],            // 当前文件夹路径（不含文件名）
     dirs: [],            // 当前视图的子文件夹 [{name, path}]
     files: [],           // 当前视图的照片 [{name, bytes, dir, path}]
-    shown: 0,
+    page: 1,             // 当前页码（1 起，每页至多 PAGE 张）
     query: '',
     searchView: false,   // 是否处于“全局搜索结果”视图
     lbIndex: -1,         // 灯箱当前照片在 state.files 中的下标
@@ -67,12 +69,12 @@
   const imageUrl = (segs) => state.manifest.base + encodePath([...state.prefix, ...segs]);
 
   /* --------------------------- 缩略图 --------------------------- */
-  // 原图中位数约 15MB，网格走 wsrv.nl 图片代理按需缩放（600px WebP，约 20~40KB），
+  // 原图中位数约 15MB，网格走 wsrv.nl 图片代理按需缩放（480px WebP，约 15~25KB），
   // 代理端会缓存结果；灯箱 / 下载 / “在 HF 打开”仍然用原图。
-  const THUMB_EDGE = 600;
+  const THUMB_EDGE = 480;
   const thumbUrl = (segs) =>
     `https://wsrv.nl/?url=${encodeURIComponent(imageUrl(segs))}` +
-    `&w=${THUMB_EDGE}&h=${THUMB_EDGE}&fit=inside&output=webp&q=72`;
+    `&w=${THUMB_EDGE}&h=${THUMB_EDGE}&fit=inside&output=webp&q=70`;
 
   const tileUrl = (segs, forceOriginal) =>
     (state.thumbs && !forceOriginal) ? thumbUrl(segs) : imageUrl(segs);
@@ -80,6 +82,70 @@
   const THUMB_PREF = 'gallery:thumbs';
   const loadThumbPref = () => { try { return localStorage.getItem(THUMB_PREF) !== '0'; } catch (e) { return true; } };
   const saveThumbPref = (v) => { try { localStorage.setItem(THUMB_PREF, v ? '1' : '0'); } catch (e) { /* 隐私模式下忽略 */ } };
+
+  /* --------------------------- 图片加载调度 --------------------------- */
+  // 一屏几十张一起打向同一个域名会互相排队，还会触发源站限流
+  // （wsrv 去 HF 拉原图被 403，回给我们 404 → 白白重试更慢）。
+  // 统一走两级队列：已进入视口的瓦片优先，其余当作预热排队，
+  // 这样打开文件夹时首屏最快，往下滚时图基本已经是热的。
+  const LOADER_LIMIT_MIN = 4;             // 失败时退避收缩，实测 8 路 0 失败、20 路开始出 404
+  const LOADER_LIMIT_MAX = 16;
+  const loader = {
+    hi: [], lo: [], active: 0, pending: new Set(),
+    limit: 8,                              // 自适应并发：一路顺就加，一失败就砍
+    streak: 0,
+
+    add(job) {
+      this.pending.add(job);
+      (job.urgent ? this.hi : this.lo).push(job);
+      this.pump();
+    },
+    promote(job) {                          // 瓦片进入视口 → 提到队首
+      if (!this.pending.has(job) || job.urgent) return;
+      job.urgent = true;
+      const i = this.lo.indexOf(job);
+      if (i >= 0) { this.lo.splice(i, 1); this.hi.push(job); }
+    },
+    clear() {                               // 重新渲染时丢弃还没开始的任务（进行中的会自然收尾）
+      this.hi.length = 0;
+      this.lo.length = 0;
+      this.pending.clear();
+    },
+    ok() {                                  // 成功：连赢 6 次提一档
+      if (++this.streak >= 6 && this.limit < LOADER_LIMIT_MAX) { this.limit += 2; this.streak = 0; }
+    },
+    fail() {                                // 失败/超时：立刻砍半（下限 4），并重新退避等待
+      this.streak = 0;
+      this.limit = Math.max(LOADER_LIMIT_MIN, Math.floor(this.limit / 2));
+    },
+    pump() {
+      while (this.active < this.limit) {
+        const job = this.hi.shift() || this.lo.shift();
+        if (!job) return;
+        this.pending.delete(job);
+        this.active += 1;
+        let settled = false;
+        const done = (ok) => {              // 看门狗：请求卡死不返回时也要归还名额，避免整个队列堵死
+          if (settled) return;
+          settled = true;
+          clearTimeout(watchdog);
+          this.active -= 1;
+          if (ok === true) this.ok(); else this.fail();
+          this.pump();
+        };
+        const watchdog = setTimeout(() => done(false), 45000);
+        try { job.run(done); } catch (e) { done(false); }
+      }
+    },
+  };
+
+  const tileIO = new IntersectionObserver((entries) => {
+    for (const en of entries) {
+      if (!en.isIntersecting) continue;
+      tileIO.unobserve(en.target);
+      if (en.target.__job) loader.promote(en.target.__job);
+    }
+  }, { rootMargin: '600px' });
 
   // 路径是否能解析到某个文件夹（末段允许是文件名）
   const pathResolves = (s) =>
@@ -136,7 +202,7 @@
     const node = nodeAt(state.path) || state.root;
     state.dirs = Object.entries(node.dirs || {}).map(([name]) => ({ name, path: [...state.path, name] }));
     state.files = (node.files || []).map(([name, bytes]) => ({ name, bytes, dir: [...state.path], path: [...state.path, name] }));
-    state.shown = Math.min(PAGE, state.files.length);
+    state.page = 1;                               // 换文件夹一律回到第 1 页
   }
 
   function matchTree(q) {                       // 全局搜索：命中文件 + 命中文件夹
@@ -194,7 +260,7 @@
       return { name: segs[segs.length - 1], path: segs };
     });
     state.files = res.files;
-    state.shown = Math.min(PAGE, state.files.length);
+    state.page = 1;
     render();
   }
 
@@ -295,6 +361,9 @@
 
   function renderGrid() {
     els.grid.innerHTML = '';
+    loader.clear();          // 丢弃上一屏还没开始的加载任务
+    tileIO.disconnect();
+    clampPage();             // 照片变少（例如搜索命中数变化）时兜底，别停在不存在的页码上
     const q = state.query.trim().toLowerCase();
 
     const meta = [];
@@ -324,6 +393,7 @@
     }
 
     appendTiles();
+    renderPager();
 
     const nothing = !state.dirs.length && !state.files.length;
     els.empty.hidden = !nothing;
@@ -334,17 +404,84 @@
     }
   }
 
+  /* ------------------------------ 分页 ------------------------------ */
+  // 一个文件夹最多可到几千张照片，一次性塞进 DOM 只会让首屏变慢，
+  // 所以每页只渲染 PAGE（50）张，底部给页码跳转。
+  const totalPages = () => Math.max(1, Math.ceil(state.files.length / PAGE));
+  const clampPage = () => { state.page = Math.min(Math.max(state.page, 1), totalPages()); };
+  const pageRange = () => {
+    const start = (state.page - 1) * PAGE;
+    return { start, end: Math.min(start + PAGE, state.files.length) };
+  };
+
   function appendTiles() {
+    const { start, end } = pageRange();
     const frag = document.createDocumentFragment();
-    const end = Math.min(state.shown, state.files.length);
-    for (let i = els.grid.querySelectorAll('.tile').length; i < end; i++) {
-      frag.appendChild(createTile(state.files[i], i));
-    }
+    for (let i = start; i < end; i++) frag.appendChild(createTile(state.files[i], i));  // index 仍是整个文件夹里的下标，灯箱继续按文件夹顺序翻
     els.grid.appendChild(frag);
-    const remain = state.files.length - end;
-    els.sentinel.hidden = remain <= 0;
-    if (remain > 0) els.loadMore.textContent = `加载更多（还有 ${fmtNum(remain)} 张）`;
   }
+
+  function clearTiles() {
+    for (const t of els.grid.querySelectorAll('.tile')) t.remove();
+  }
+
+  // 页码序列：首页 / 当前页 ±2 / 末页；折叠掉的区间 ≥ 2 页才用 …（只藏 1 页就直接列出来）
+  function pageItems(pages, cur) {
+    const lo = Math.max(2, cur - 2);
+    const hi = Math.min(pages - 1, cur + 2);
+    const items = [1];
+    const leftGap = lo - 2;              // 2 … lo-1
+    const rightGap = pages - 1 - hi;     // hi+1 … pages-1
+    if (leftGap === 1) items.push(lo - 1);
+    else if (leftGap > 1) items.push('…');
+    for (let i = lo; i <= hi; i++) items.push(i);
+    if (rightGap === 1) items.push(hi + 1);
+    else if (rightGap > 1) items.push('…');
+    if (pages > 1) items.push(pages);
+    return items;
+  }
+
+  function renderPager() {
+    const pages = totalPages();
+    els.pager.hidden = pages <= 1;
+    if (pages <= 1) return;
+    const { start, end } = pageRange();
+    els.prevPage.disabled = state.page === 1;
+    els.nextPage.disabled = state.page === pages;
+    els.pageInfo.textContent = `第 ${fmtNum(state.page)} / ${fmtNum(pages)} 页 · 第 ${fmtNum(start + 1)}–${fmtNum(end)} 张，共 ${fmtNum(state.files.length)} 张`;
+
+    els.pageList.innerHTML = '';
+    for (const item of pageItems(pages, state.page)) {
+      if (item === '…') {
+        const gap = document.createElement('span');
+        gap.className = 'page-gap';
+        gap.textContent = '…';
+        els.pageList.appendChild(gap);
+        continue;
+      }
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'page-btn' + (item === state.page ? ' active' : '');
+      b.textContent = fmtNum(item);
+      if (item === state.page) b.setAttribute('aria-current', 'page');
+      else b.addEventListener('click', () => goToPage(item));
+      els.pageList.appendChild(b);
+    }
+  }
+
+  function goToPage(n) {
+    const target = Math.min(Math.max(n, 1), totalPages());
+    if (target === state.page) return;
+    state.page = target;
+    loader.clear();          // 换页时丢掉上一页还没开始的加载任务
+    tileIO.disconnect();
+    clearTiles();
+    appendTiles();
+    renderPager();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  const RETRY_DELAYS = [1500, 6000];   // 缩略图被源站限流时的退避重试（实测隔几秒基本能恢复）
 
   function createTile(file, index) {
     const btn = document.createElement('button');
@@ -356,45 +493,71 @@
     badges.className = 'badges';
     badges.innerHTML = `<span class="badge">${fmtBytes(file.bytes)}</span>`;
 
-    const attach = (url, wasThumb) => {
-      const img = document.createElement('img');
-      img.alt = file.name;
-      img.loading = 'lazy';
-      img.decoding = 'async';
-      img.src = url;
-      img.addEventListener('load', () => { img.classList.add('loaded'); btn.classList.add('done'); });
-      img.addEventListener('error', () => {
-        if (wasThumb && !btn.dataset.retried) {      // 代理偶发被源站限流，自动重试一次
-          btn.dataset.retried = '1';
-          show(Date.now());
-          return;
-        }
-        btn.classList.add('done', 'failed');
-        if (wasThumb) {
-          // 缩略图仍失败时不自动去拉十几 MB 的原图，交给用户点一下决定
-          btn.dataset.mode = 'original';
-          btn.innerHTML = '<span class="err">😵 缩略图加载失败<br>点击加载原图</span>';
-        } else {
-          btn.innerHTML = '<span class="err">😵 图片加载失败<br>点击重试</span>';
-        }
-      });
-      return img;
-    };
+    let gen = 0;          // 每次重建图片 +1，用来丢弃过期的重试/回调
+    let tries = 0;        // 缩略图已重试次数
+    let mode = '';        // '' = 按全局设置；'original' = 这张瓦片强制用原图
 
-    // bust: 重试时加的时间戳，绕开失败的缓存
+    // 构造 <img> 并排进加载队列：真正发请求的时机和并发都由队列控制
     const show = (bust) => {
+      const g = ++gen;
       btn.classList.remove('done', 'failed');
       btn.innerHTML = '';
-      const wasThumb = state.thumbs && btn.dataset.mode !== 'original';
-      let url = tileUrl(file.path, btn.dataset.mode === 'original');
+
+      const wasThumb = state.thumbs && mode !== 'original';
+      let url = tileUrl(file.path, mode === 'original');
       if (bust) url += (url.includes('?') ? '&' : '?') + 'r=' + bust;
-      btn.appendChild(attach(url, wasThumb));
+
+      const img = document.createElement('img');
+      img.alt = file.name;
+      img.decoding = 'async';
+
+      const job = {
+        urgent: false,
+        run: (done) => {
+          img.addEventListener('load', () => {
+            done(true);
+            if (g !== gen) return;
+            img.classList.add('loaded');
+            btn.classList.add('done');
+          }, { once: true });
+          img.addEventListener('error', () => {
+            done(false);
+            if (g !== gen) return;
+            onError(wasThumb);
+          }, { once: true });
+          img.src = url;
+        },
+      };
+
+      btn.appendChild(img);
       btn.appendChild(badges);
+      btn.__job = job;
+      tileIO.observe(btn);
+      loader.add(job);
+    };
+
+    const onError = (wasThumb) => {
+      if (wasThumb && tries < RETRY_DELAYS.length) {      // 限流是瞬时的，先退避重试
+        const delay = RETRY_DELAYS[tries];
+        tries += 1;
+        const g = gen;
+        setTimeout(() => { if (g === gen) show(Date.now()); }, delay);
+        return;
+      }
+      btn.classList.add('done', 'failed');
+      if (wasThumb) {
+        // 仍失败就不自动去拉十几 MB 的原图，交给用户点一下决定
+        mode = 'original';
+        btn.innerHTML = '<span class="err">😵 缩略图加载失败<br>点击加载原图</span>';
+      } else {
+        btn.innerHTML = '<span class="err">😵 图片加载失败<br>点击重试</span>';
+      }
     };
 
     show();
     btn.addEventListener('click', () => {
       if (btn.classList.contains('failed')) {      // 失败重试（不再打开灯箱）
+        tries = 0;
         show(Date.now());
         return;
       }
@@ -425,11 +588,23 @@
 
     els.lbImage.classList.add('loading');
     els.lbImage.alt = file.name;
-    els.lbImage.src = src;
+    // 先秒显网格里已缓存的缩略图，原图（中位数 15MB，跨海约 7s）后台下完再无缝替换
+    const placeholder = state.thumbs ? thumbUrl(file.path) : src;
+    els.lbImage.src = placeholder;
+    if (placeholder !== src) {
+      const hiRes = new Image();
+      hiRes.onload = () => {
+        if (state.lbIndex !== index || els.lightbox.hidden) return;
+        els.lbImage.src = hiRes.src;
+      };
+      hiRes.src = src;
+    }
 
-    // 预取前后各一张
+    // 预取前后各一张（只预取缩略图，避免每次翻页多下 30MB 原图）
     [index - 1, index + 1].forEach((i) => {
-      if (i >= 0 && i < state.files.length) { const p = new Image(); p.src = imageUrl(state.files[i].path); }
+      if (state.thumbs && i >= 0 && i < state.files.length) {
+        const p = new Image(); p.src = thumbUrl(state.files[i].path);
+      }
     });
   }
 
@@ -452,7 +627,8 @@
   };
 
   /* ------------------------------ 事件 ------------------------------ */
-  els.loadMore.addEventListener('click', () => { state.shown = Math.min(state.shown + PAGE, state.files.length); appendTiles(); });
+  els.prevPage.addEventListener('click', () => goToPage(state.page - 1));
+  els.nextPage.addEventListener('click', () => goToPage(state.page + 1));
   els.lbPrev.addEventListener('click', () => stepLightbox(-1));
   els.lbNext.addEventListener('click', () => stepLightbox(1));
   els.lbClose.addEventListener('click', () => closeLightbox(false));
@@ -489,6 +665,7 @@
     render();
   });
 
+  // 翻页：键盘 ← → （灯箱打开时是上一张/下一张，这里是上一页/下一页）
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (!els.lightbox.hidden) closeLightbox(false);
@@ -500,22 +677,16 @@
       if (e.key === 'ArrowRight') stepLightbox(1);
       return;
     }
-    if (e.key === '/' && document.activeElement !== els.search) { e.preventDefault(); els.search.focus(); }
+    if (document.activeElement === els.search) return;
+    if (e.key === 'ArrowLeft') goToPage(state.page - 1);
+    if (e.key === 'ArrowRight') goToPage(state.page + 1);
+    if (e.key === '/' ) { e.preventDefault(); els.search.focus(); }
   });
 
   // 点击遮罩关闭灯箱
   els.lightbox.addEventListener('click', (e) => {
     if (e.target === els.lightbox || e.target.classList.contains('lb-stage')) closeLightbox(false);
   });
-
-  // 滚动到接近底部时自动加载下一批
-  const io = new IntersectionObserver((entries) => {
-    if (entries.some((en) => en.isIntersecting) && !els.sentinel.hidden && state.shown < state.files.length) {
-      state.shown = Math.min(state.shown + PAGE, state.files.length);
-      appendTiles();
-    }
-  }, { rootMargin: '600px' });
-  io.observe(els.sentinel);
 
   window.addEventListener('hashchange', route);
 
