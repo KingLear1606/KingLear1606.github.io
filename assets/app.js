@@ -13,7 +13,7 @@
     search: $('search'), searchClear: $('searchClear'),
     sidebarToggle: $('sidebarToggle'), thumbToggle: $('thumbToggle'), mirrorToggle: $('mirrorToggle'),
     sidebarBackdrop: $('sidebarBackdrop'), sidebarClose: $('sidebarClose'),
-    galleryTitle: $('galleryTitle'), galleryDescription: $('galleryDescription'),
+    galleryTitle: $('galleryTitle'),
     lightbox: $('lightbox'), lbImage: $('lbImage'), lbTitle: $('lbTitle'), lbCount: $('lbCount'),
     lbCaption: $('lbCaption'), lbPrev: $('lbPrev'), lbNext: $('lbNext'), lbClose: $('lbClose'),
     lbOpen: $('lbOpen'), lbDownload: $('lbDownload'),
@@ -315,10 +315,7 @@
   function renderStats() {
     const s = statsOf(state.root);
     els.stats.textContent = `${fmtNum(s.dirs)} 本相册 / ${fmtNum(s.files)} 张照片`;
-    els.galleryTitle.textContent = state.searchView ? '寻找片刻' : state.path.at(-1) || '旅行影集';
-    els.galleryDescription.textContent = state.searchView
-      ? `与「${state.query.trim()}」有关的旅行记忆`
-      : state.path.length ? '一些风景，一些值得记住的瞬间。' : '走过的城市，留在这里。';
+    els.galleryTitle.textContent = state.searchView ? '搜索结果' : state.path.at(-1) || '旅行影集';
     document.title = `${state.searchView ? '搜索' : state.path.at(-1) || '旅行影集'} · MyGallery`;
   }
 
@@ -566,10 +563,20 @@
     badges.innerHTML = folder
       ? `<span class="fname">${escapeHtml(folder.name)}</span><span class="fcount">${fmtNum(options.count)} 张照片</span>`
       : `<span class="badge">${fmtBytes(file.bytes)}</span>`;
-    // Folder covers stay small even when the photo grid is in original-image mode.
-    const candidates = () => folder
-      ? [proxyUrl(urlOn(file.path, state.mirror)), proxyUrl(urlOn(file.path, !state.mirror))]
-      : candidatesFor(file.path);
+    // Covers follow the image-quality switch; use a sharp, screen-sized proxy as fallback.
+    const coverWidth = Math.min(1600, Math.max(960,
+      Math.ceil(((els.grid.clientWidth || 1280) / (innerWidth > 1050 ? 4 : innerWidth > 760 ? 3 : innerWidth > 380 ? 2 : 1))
+        * (window.devicePixelRatio || 1) / 160) * 160));
+    const coverProxy = (url) => `https://wsrv.nl/?url=${encodeURIComponent(url)}` +
+      `&w=${coverWidth}&h=${Math.round(coverWidth * 2 / 3)}&fit=cover&output=webp&q=90`;
+    const candidates = () => {
+      if (!folder) return candidatesFor(file.path);
+      const primary = urlOn(file.path, state.mirror);
+      const other = urlOn(file.path, !state.mirror);
+      return state.thumbs
+        ? [coverProxy(primary), coverProxy(other), primary, other]
+        : [primary, other, coverProxy(primary), coverProxy(other)];
+    };
 
     let gen = 0;          // 每次重建图片 +1，用来丢弃过期的重试/回调
     let cand = 0;         // 当前试到候选地址里的第几个
