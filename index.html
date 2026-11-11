@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>我的图库</title>
-<meta name="description" content="按原始目录结构浏览照片，数据来自公开的 Hugging Face 数据集。" />
+<title>旅行影集 · MyGallery</title>
+<meta name="description" content="走过的城市，留在这里。Breeze 的旅行摄影与城市影集。" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%93%B7%3C/text%3E%3C/svg%3E" />
-<link rel="stylesheet" href="assets/style.css?v=20261008c" />
+<link rel="stylesheet" href="assets/style.css?v=20261111a" />
 </head>
 <body>
 <noscript>
@@ -15,27 +15,45 @@
   </div>
 </noscript>
 <header class="topbar">
-  <button class="icon-btn" id="sidebarToggle" title="目录" aria-label="切换目录">☰</button>
-  <a class="brand" href="#/">📷 我的图库</a>
-  <div class="search-box">
-    <input id="search" type="search" placeholder="搜索文件夹或照片名…" autocomplete="off" aria-label="搜索" />
-    <button class="icon-btn" id="searchClear" title="清除搜索" aria-label="清除搜索">✕</button>
-  </div>
-  <div class="stats" id="stats">加载中…</div>
-  <button class="icon-btn mode-btn" id="mirrorToggle" aria-pressed="true" title="图片走 hf-mirror.com 镜像站，点击切回官方站">镜像</button>
-  <button class="icon-btn mode-btn" id="thumbToggle" aria-pressed="false" title="网格直接加载原图，点击切换为缩略图">原图</button>
+  <a class="brand" href="#/" aria-label="MyGallery 首页">
+    <svg viewBox="0 0 24 24" width="23" height="23" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="5" width="18" height="15" rx="1"/><path d="m3 16 5-5 5 5 3-3 5 5M8 5l1-2h6l1 2"/><circle cx="16" cy="9" r="1"/></svg>
+    MyGallery<span class="brand-dot">.</span>
+  </a>
+  <nav class="topnav" aria-label="主导航">
+    <a href="#/" class="nav-link">相册</a>
+    <button class="nav-link" id="sidebarToggle" aria-controls="sidebar" aria-expanded="false">目录</button>
+    <a href="https://github.com/KingLear1606" class="nav-link" target="_blank" rel="noopener">关于 ↗</a>
+  </nav>
 </header>
 
+<button class="sidebar-backdrop" id="sidebarBackdrop" hidden aria-label="关闭目录"></button>
 <div class="layout">
-  <aside class="sidebar" id="sidebar">
-    <div class="sidebar-head">目录</div>
+  <aside class="sidebar" id="sidebar" aria-label="相册目录" aria-hidden="true" inert>
+    <div class="sidebar-head"><span>相册目录</span><button class="icon-btn" id="sidebarClose" aria-label="关闭目录">✕</button></div>
     <nav id="tree" class="tree" aria-label="文件夹树"></nav>
   </aside>
 
-  <main class="main">
-    <nav class="breadcrumb" id="breadcrumb" aria-label="路径"></nav>
-    <div class="folder-meta" id="folderMeta"></div>
-    <div class="grid" id="grid"></div>
+  <main class="main" id="main">
+    <section class="gallery-intro" aria-labelledby="galleryTitle">
+      <p class="eyebrow">TRAVEL &amp; PHOTOGRAPHY</p>
+      <h1 id="galleryTitle">旅行影集</h1>
+      <p class="intro-description" id="galleryDescription">走过的城市，留在这里。</p>
+      <p class="stats" id="stats" aria-live="polite">正在整理旅途中的片刻…</p>
+    </section>
+    <div class="gallery-toolbar">
+      <nav class="breadcrumb" id="breadcrumb" aria-label="路径"></nav>
+      <div class="gallery-controls">
+        <div class="search-box">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg>
+          <input id="search" type="search" placeholder="搜索城市、照片…" autocomplete="off" aria-label="搜索城市或照片" />
+          <button class="icon-btn" id="searchClear" title="清除搜索" aria-label="清除搜索">✕</button>
+        </div>
+        <button class="icon-btn mode-btn" id="mirrorToggle" aria-pressed="true" title="切换图片线路">镜像</button>
+        <button class="icon-btn mode-btn" id="thumbToggle" aria-pressed="false" title="切换图片清晰度">原图</button>
+      </div>
+    </div>
+    <div class="folder-meta" id="folderMeta" aria-live="polite"></div>
+    <div class="grid" id="grid" aria-label="相册与照片"></div>
     <div class="empty" id="empty" hidden></div>
     <nav class="pager" id="pager" hidden aria-label="分页">
       <button class="btn" id="prevPage" title="上一页 (←)">‹ 上一页</button>
@@ -46,7 +64,9 @@
   </main>
 </div>
 
-<div class="lightbox" id="lightbox" hidden>
+<footer class="site-footer"><a href="#/">MyGallery.</a><span>旅行的片刻 · 摄影 / Breeze</span><a href="https://github.com/KingLear1606/KingLear1606.github.io" target="_blank" rel="noopener">GitHub ↗</a></footer>
+
+<div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="照片预览" hidden>
   <div class="lb-toolbar">
     <span class="lb-title" id="lbTitle"></span>
     <span class="lb-count" id="lbCount"></span>
@@ -64,6 +84,6 @@
 
 <!-- ?v= 是给静态资源加的版本号：GitHub Pages 的 max-age=600 会让浏览器缓存 app.js，
      改版后 bump 一下这个日期串，用户普通刷新就能拿到新代码 -->
-<script src="assets/app.js?v=20261008c"></script>
+<script src="assets/app.js?v=20261111a"></script>
 </body>
 </html>

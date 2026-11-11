@@ -12,6 +12,8 @@
     pageList: $('pageList'), pageInfo: $('pageInfo'),
     search: $('search'), searchClear: $('searchClear'),
     sidebarToggle: $('sidebarToggle'), thumbToggle: $('thumbToggle'), mirrorToggle: $('mirrorToggle'),
+    sidebarBackdrop: $('sidebarBackdrop'), sidebarClose: $('sidebarClose'),
+    galleryTitle: $('galleryTitle'), galleryDescription: $('galleryDescription'),
     lightbox: $('lightbox'), lbImage: $('lbImage'), lbTitle: $('lbTitle'), lbCount: $('lbCount'),
     lbCaption: $('lbCaption'), lbPrev: $('lbPrev'), lbNext: $('lbNext'), lbClose: $('lbClose'),
     lbOpen: $('lbOpen'), lbDownload: $('lbDownload'),
@@ -26,6 +28,7 @@
     query: '',
     searchView: false,   // 是否处于“全局搜索结果”视图
     lbIndex: -1,         // 灯箱当前照片在 state.files 中的下标
+    lbReturnFocus: null,
     countCache: new WeakMap(),
     prefix: [],          // 清单根上若还套着一层目录（如旧清单的 JPG），用于拼图片地址
     root: null,          // 根节点：图库直接从城市目录这一层开始
@@ -205,7 +208,7 @@
       state.query = '';
       els.search.value = '';
     }
-    els.sidebar.classList.remove('open');
+    setSidebar(false);
     const target = '#/' + encodePath(segs);
     if (location.hash !== target) location.hash = target;
     else route();
@@ -311,8 +314,12 @@
 
   function renderStats() {
     const s = statsOf(state.root);
-    els.stats.textContent = `${fmtNum(s.dirs)} 个文件夹 · ${fmtNum(s.files)} 张照片 · ${fmtBytes(s.bytes)}`;
-    document.title = state.path.length ? `${state.path[state.path.length - 1]} · 我的图库` : '我的图库';
+    els.stats.textContent = `${fmtNum(s.dirs)} 本相册 / ${fmtNum(s.files)} 张照片`;
+    els.galleryTitle.textContent = state.searchView ? '寻找片刻' : state.path.at(-1) || '旅行影集';
+    els.galleryDescription.textContent = state.searchView
+      ? `与「${state.query.trim()}」有关的旅行记忆`
+      : state.path.length ? '一些风景，一些值得记住的瞬间。' : '走过的城市，留在这里。';
+    document.title = `${state.searchView ? '搜索' : state.path.at(-1) || '旅行影集'} · MyGallery`;
   }
 
   function renderTree() {
@@ -370,7 +377,7 @@
     els.breadcrumb.innerHTML = '';
     const root = document.createElement('button');          // 顶层 JPG 即根目录
     root.className = 'crumb' + (state.path.length || state.searchView ? '' : ' current');
-    root.textContent = '全部';
+    root.textContent = '全部相册';
     root.addEventListener('click', () => navigate([]));
     els.breadcrumb.appendChild(root);
     state.path.forEach((seg, i) => {
@@ -419,13 +426,16 @@
     for (const d of state.dirs) {
       const node = nodeAt(d.path);
       const s = node ? statsOf(node) : { files: 0 };
-      const card = document.createElement('button');
-      card.type = 'button';
-      card.className = 'card-folder';
-      card.innerHTML = `<span class="fico">📁</span><span class="fname"></span><span class="fcount"></span>`;
-      card.querySelector('.fname').textContent = d.name;
-      card.querySelector('.fcount').textContent = `${fmtNum(s.files)} 张照片`;
-      card.addEventListener('click', () => { els.search.value = ''; state.query = ''; navigate(d.path); });
+      const cover = coverOf(node, d.path);
+      const card = cover ? createTile(cover, -1, { folder: d, count: s.files }) : document.createElement('button');
+      if (!cover) {
+        card.type = 'button';
+        card.className = 'card-folder no-cover';
+        card.innerHTML = `<span class="folder-caption"><span class="fname"></span><span class="fcount">暂无照片</span></span>`;
+        card.querySelector('.fname').textContent = d.name;
+        card.addEventListener('click', () => navigate(d.path));
+      }
+      card.setAttribute('aria-label', `${d.name}，${fmtNum(s.files)} 张照片，打开相册`);
       els.grid.appendChild(card);
     }
 
@@ -439,6 +449,21 @@
         ? `<div class="big">🔍</div>没有找到与“${escapeHtml(state.query.trim())}”匹配的照片`
         : `<div class="big">📂</div>这个文件夹里还没有照片`;
     }
+  }
+
+  // A stable representative photo also works for folders containing only subfolders.
+  function coverOf(node, path) {
+    if (!node) return null;
+    const files = node.files || [];
+    if (files.length) {
+      const [name, bytes] = files[Math.floor(files.length / 2)];
+      return { name, bytes, path: [...path, name] };
+    }
+    for (const [name, child] of Object.entries(node.dirs || {})) {
+      const cover = coverOf(child, [...path, name]);
+      if (cover) return cover;
+    }
+    return null;
   }
 
   /* ------------------------------ 分页 ------------------------------ */
@@ -459,7 +484,7 @@
   }
 
   function clearTiles() {
-    for (const t of els.grid.querySelectorAll('.tile')) t.remove();
+    for (const t of els.grid.querySelectorAll('.tile:not(.card-folder)')) t.remove();
   }
 
   // 页码序列：首页 / 当前页 ±2 / 末页；折叠掉的区间 ≥ 2 页才用 …（只藏 1 页就直接列出来）
@@ -513,6 +538,12 @@
     loader.clear();          // 换页时丢掉上一页还没开始的加载任务
     tileIO.disconnect();
     clearTiles();
+    for (const cover of els.grid.querySelectorAll('.card-folder')) {
+      if (cover.__job && !cover.querySelector('img')?.getAttribute('src')) {
+        tileIO.observe(cover);
+        loader.add(cover.__job);
+      }
+    }
     appendTiles();
     renderPager();
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -523,15 +554,22 @@
   // 同一条线路上的重试（限流/抖动这类瞬时问题）
   const retryLater = (fn, delay) => setTimeout(fn, delay);
 
-  function createTile(file, index) {
+  function createTile(file, index, options = {}) {
+    const folder = options.folder;
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'tile';
-    btn.title = `${file.name} · ${fmtBytes(file.bytes)}`;
+    btn.className = folder ? 'tile card-folder' : 'tile';
+    btn.title = folder ? folder.name : `${file.name} · ${fmtBytes(file.bytes)}`;
 
     const badges = document.createElement('span');
-    badges.className = 'badges';
-    badges.innerHTML = `<span class="badge">${fmtBytes(file.bytes)}</span>`;
+    badges.className = folder ? 'folder-caption' : 'badges';
+    badges.innerHTML = folder
+      ? `<span class="fname">${escapeHtml(folder.name)}</span><span class="fcount">${fmtNum(options.count)} 张照片</span>`
+      : `<span class="badge">${fmtBytes(file.bytes)}</span>`;
+    // Folder covers stay small even when the photo grid is in original-image mode.
+    const candidates = () => folder
+      ? [proxyUrl(urlOn(file.path, state.mirror)), proxyUrl(urlOn(file.path, !state.mirror))]
+      : candidatesFor(file.path);
 
     let gen = 0;          // 每次重建图片 +1，用来丢弃过期的重试/回调
     let cand = 0;         // 当前试到候选地址里的第几个
@@ -543,21 +581,21 @@
       btn.classList.remove('done', 'failed');
       btn.innerHTML = '';
 
-      const list = candidatesFor(file.path);
+      const list = candidates();
       cand = Math.min(cand, list.length - 1);
       let url = list[cand];
       if (bust) url += (url.includes('?') ? '&' : '?') + 'r=' + bust;
       const isProxy = url.startsWith('https://wsrv.nl/');
 
       const img = document.createElement('img');
-      img.alt = file.name;
+      img.alt = folder ? '' : file.name;
       img.decoding = 'async';
 
       const job = {
         urgent: false,
         // 原图 15MB/张：等进入视口再发，别整页预热。
         // 走代理的缩略图很小，可以继续预热。
-        hold: !isProxy,
+        hold: folder || !isProxy,
         run: (done) => {
           img.addEventListener('load', () => {
             done(true);
@@ -592,7 +630,7 @@
         retryLater(() => { if (g === gen) show(Date.now()); }, delay);
         return;
       }
-      const list = candidatesFor(file.path);
+      const list = candidates();
       if (cand + 1 < list.length) {                 // 换下一条候选（换线路 / 最后走代理）
         cand += 1;
         sameLine = 0;
@@ -601,11 +639,15 @@
         return;
       }
       btn.classList.add('done', 'failed');
-      btn.innerHTML = '<span class="err">😵 图片加载失败<br>点击重试</span>';
+      btn.innerHTML = folder
+        ? '<span class="err">封面暂不可用 · 点击进入相册</span>'
+        : '<span class="err">图片加载失败 · 点击重试</span>';
+      if (folder) btn.appendChild(badges);
     };
 
     show();
     btn.addEventListener('click', () => {
+      if (folder) { navigate(folder.path); return; }
       if (btn.classList.contains('failed')) {      // 失败重试（不再打开灯箱）
         cand = 0;
         sameLine = 0;
@@ -622,8 +664,11 @@
   /* ------------------------------ 灯箱 ------------------------------ */
   function openLightbox(index) {
     if (index < 0 || index >= state.files.length) return;
+    const wasHidden = els.lightbox.hidden;
+    if (wasHidden) state.lbReturnFocus = document.activeElement;
     state.lbIndex = index;
     els.lightbox.hidden = false;
+    if (wasHidden) els.lbClose.focus();
     document.body.style.overflow = 'hidden';
     const file = state.files[index];
     const src = imageUrl(file.path);
@@ -666,6 +711,7 @@
     els.lbImage.src = '';
     document.body.style.overflow = '';
     state.lbIndex = -1;
+    if (state.lbReturnFocus?.isConnected) state.lbReturnFocus.focus({ preventScroll: true });
     // 从“直链打开单张照片”进入时，关闭后把地址栏还原成所在文件夹
     if (!silent && parseHash().join('/') !== state.path.join('/')) {
       history.replaceState(null, '', '#/' + encodePath(state.path));
@@ -700,7 +746,29 @@
     applySearch();
     els.search.focus();
   });
-  els.sidebarToggle.addEventListener('click', () => els.sidebar.classList.toggle('open'));
+  function setSidebar(open) {
+    const hadFocus = els.sidebar.contains(document.activeElement);
+    els.sidebar.classList.toggle('open', open);
+    els.sidebar.inert = !open;
+    els.sidebar.setAttribute('aria-hidden', String(!open));
+    els.sidebarToggle.setAttribute('aria-expanded', String(open));
+    els.sidebarBackdrop.hidden = !open;
+    document.body.classList.toggle('directory-open', open);
+    if (open) els.sidebarClose.focus();
+    else if (hadFocus) els.sidebarToggle.focus();
+  }
+  els.sidebarToggle.addEventListener('click', () => setSidebar(!els.sidebar.classList.contains('open')));
+  els.sidebarClose.addEventListener('click', () => setSidebar(false));
+  els.sidebarBackdrop.addEventListener('click', () => setSidebar(false));
+
+  function trapFocus(container, event) {
+    if (event.key !== 'Tab') return;
+    const focusable = [...container.querySelectorAll('button:not(:disabled), a[href], input')]
+      .filter((el) => el.getClientRects().length);
+    const first = focusable[0], last = focusable.at(-1);
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  }
 
   /* --------------------------- 缩略图开关 --------------------------- */
   // 按钮文字显示的是「当前模式」：默认原图，点一下切到缩略图，再点切回原图
@@ -738,10 +806,15 @@
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (!els.lightbox.hidden) closeLightbox(false);
-      else els.sidebar.classList.remove('open');
+      else setSidebar(false);
+      return;
+    }
+    if (els.sidebar.classList.contains('open')) {
+      trapFocus(els.sidebar, e);
       return;
     }
     if (!els.lightbox.hidden) {
+      trapFocus(els.lightbox, e);
       if (e.key === 'ArrowLeft') stepLightbox(-1);
       if (e.key === 'ArrowRight') stepLightbox(1);
       return;
